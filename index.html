@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ДТП-Кликер 🚗💥</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    min-height: 100vh;
+    background: radial-gradient(1200px 600px at 50% -10%, #1e3340, #0b1116 70%);
+    color: #e8f0f5;
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    padding: 14px;
+  }
+  .app { display: flex; gap: 14px; width: 100%; max-width: 1320px; align-items: flex-start; }
+  .stage { position: relative; flex: 1 1 auto; min-width: 0; }
+  canvas#game {
+    display: block; width: 100%; height: auto;
+    border-radius: 16px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.06) inset;
+    touch-action: manipulation;
+    cursor: default;
+    user-select: none;
+  }
+  .hud { position: absolute; top: 12px; left: 12px; display: flex; gap: 8px; pointer-events: none; }
+  .hud-item {
+    background: rgba(10,16,22,.72);
+    border: 1px solid rgba(255,255,255,.1);
+    backdrop-filter: blur(6px);
+    border-radius: 12px; padding: 8px 14px;
+    font-weight: 700; font-size: 20px;
+    display: flex; align-items: center; gap: 8px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.35);
+    white-space: nowrap;
+  }
+  .hud-item.small { font-size: 13px; font-weight: 600; color: #8ee6a8; padding: 10px 12px; }
+
+  .shop {
+    width: 340px; flex: 0 0 340px;
+    background: rgba(16,24,32,.86);
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 16px; padding: 14px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.5);
+    max-height: calc(100vh - 28px);
+    overflow-y: auto;
+  }
+  .shop h2 { margin: 0 0 12px; font-size: 17px; letter-spacing: .5px; }
+  .item {
+    width: 100%; display: flex; align-items: center; gap: 10px;
+    background: linear-gradient(180deg, #1c2a36, #16212b);
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 12px; padding: 10px; margin-bottom: 8px;
+    color: inherit; font: inherit; text-align: left; cursor: pointer;
+    transition: transform .08s, border-color .15s, background .15s, opacity .15s;
+  }
+  .item:hover:not(:disabled) { border-color: rgba(120,220,160,.5); transform: translateY(-1px); }
+  .item:active:not(:disabled) { transform: translateY(1px) scale(.99); }
+  .item:disabled { opacity: .42; cursor: not-allowed; }
+  .item .ico { font-size: 24px; width: 34px; text-align: center; flex: 0 0 34px; }
+  .item .info { flex: 1; min-width: 0; }
+  .item .name { font-weight: 700; font-size: 14px; }
+  .item .lvl { font-size: 11px; color: #7fd8a0; font-weight: 600; }
+  .item .desc { font-size: 11px; color: #8fa3b3; margin-top: 2px; line-height: 1.25; }
+  .item .price { font-weight: 700; font-size: 13px; color: #ffd75e; white-space: nowrap; }
+  .item.maxed .price { color: #7fd8a0; }
+  .hint { font-size: 12px; color: #7d93a6; text-align: center; margin-top: 10px; line-height: 1.4; }
+
+  @media (max-width: 920px) {
+    .app { flex-direction: column; }
+    .shop { width: 100%; flex: 1 1 auto; max-height: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="stage">
+    <div class="hud">
+      <div class="hud-item"><span>🪙</span><span id="coinText">0</span></div>
+      <div class="hud-item small" id="incomeText">+0.0/сек</div>
+    </div>
+    <canvas id="game"></canvas>
+  </div>
+  <aside class="shop">
+    <h2>🚧 Магазин</h2>
+    <div id="shopList"></div>
+    <div class="hint">Кликай по 💥, чтобы собрать монеты.<br>Покупай безопасность — пассивный доход растёт.</div>
+  </aside>
+</div>
+
+<script>
+(function () {
+'use strict';
+
+/* ============================================================
+   КОНСТАНТЫ МИРА
+   ============================================================ */
+const W = 900, H = 620;
+const HW = 42;             // половина ширины дороги
+const RW = 84;             // ширина дороги
+const LANE = 18;           // смещение полосы от центра
+const ROAD_Y = [160, 460];
+const ROAD_X = [220, 680];
+
+const NODES = {
+  A:{x:-70,y:160}, B:{x:220,y:160}, C:{x:680,y:160}, D:{x:970,y:160},
+  E:{x:-70,y:460}, F:{x:220,y:460}, G:{x:680,y:460}, H:{x:970,y:460},
+  I:{x:220,y:-70}, J:{x:680,y:-70}, K:{x:220,y:690}, L:{x:680,y:690}
+};
+
+const EDGES = [
+  ['A','B'],['B','C'],['C','D'],
+  ['E','F'],['F','G'],['G','H'],
+  ['I','B'],['J','C'],
+  ['B','F'],['C','G'],
+  ['F','K'],['G','L']
+];
+
+const ADJ = {};
+for (const [a,b] of EDGES) {
+  (ADJ[a] = ADJ[a] || []).push(b);
+  (ADJ[b] = ADJ[b] || []).push(a);
+}
+
+const INTERSECTIONS = ['B','C','F','G'];   // порядок установки светофоров/зебр
+const OUTSIDE = new Set(['A','D','E','H','I','J','K','L']);
+
+const SPAWNS = [];
+for (const [a,b] of EDGES) {
+  if (OUTSIDE.has(a)) SPAWNS.push([a,b]);
+  if (OUTSIDE.has(b)) SPAWNS.push([b,a]);
+}
+
+const CAR_COLORS = ['#e05a4f','#4a8fe0','#e0c04a','#5ac47a','#b45ae0','#e08a3a','#8fa3b3','#e05a9e'];
+const MAX_CARS = 9;
+const MAX_PEDS = 6;
+
+/* ============================================================
+   УТИЛИТЫ
+   ============================================================ */
+const rand  = (a,b) => a + Math.random()*(b-a);
+const clamp = (v,a,b) => Math.max(a, Math.min(b,v));
+const lerp  = (a,b,t) => a + (b-a)*t;
+const ease  = t => t < .5 ? 2*t*t : 1 - Math.pow(-2*t+2, 2)/2;
+
+function lerpAngle(a, b, t) {
+  let d = ((b - a + Math.PI) % (Math.PI*2) + Math.PI*2) % (Math.PI*2) - Math.PI;
+  return a + d * t;
+}
+function dirBetween(a, b) {
+  const dx = b.x-a.x, dy = b.y-a.y;
+  const l = Math.hypot(dx,dy) || 1;
+  return { x: dx/l, y: dy/l };
+}
+function lanePoint(node, d) {
+  return { x: node.x - d.y*LANE, y: node.y + d.x*LANE };
+}
+function fmt(n) { return Math.floor(n).toLocaleString('ru-RU'); }
+
+/* ============================================================
+   СОСТОЯНИЕ
+   ============================================================ */
+const state = {
+  coins: 0,
+  levels: { light:0, zebra:0, sign:0, bump:0, patrol:0 },
+  cars: [], peds: [], accidents: [], particles: [], floaters: [],
+  carTimer: 0, pedTimer: 0,
+  totalCrashes: 0
+};
+
+const SHOP = [
+  { id:'light',  icon:'🚦', name:'Светофор',            desc:'Машины пропускают друг друга на перекрёстке', basePrice:60,  growth:2.0, maxLevel:4,  income:0.6 },
+  { id:'zebra',  icon:'🦓', name:'Пешеходный переход',  desc:'Люди переходят дорогу безопаснее',           basePrice:140, growth:2.0, maxLevel:4,  income:1.2 },
+  { id:'sign',   icon:'⚠️', name:'Дорожный знак',       desc:'Водители внимательнее (меньше ДТП)',         basePrice:220, growth:1.7, maxLevel:10, income:2.5 },
+  { id:'bump',   icon:'🚧', name:'Лежачий полицейский', desc:'Машины ездят медленнее',                     basePrice:400, growth:1.7, maxLevel:10, income:4.5 },
+  { id:'patrol', icon:'🚔', name:'Патруль ДПС',         desc:'Порядок на дорогах и меньше наездов',        basePrice:750, growth:1.7, maxLevel:10, income:8 },
+];
+
+function priceOf(item) {
+  return Math.floor(item.basePrice * Math.pow(item.growth, state.levels[item.id]));
+}
+function incomePerSec() {
+  let s = 0;
+  for (const it of SHOP) s += it.income * state.levels[it.id];
+  return s;
+}
+function totalLevels() {
+  return Object.values(state.levels).reduce((a,b) => a+b, 0);
+}
+
+/* ============================================================
+   КАНВАС
+   ============================================================ */
+const cv = document.getElementById('game');
+cv.width = W; cv.height = H;
+const ctx = cv.getContext('2d');
+
+const world = document.createElement('canvas');
+world.width = W; world.height = H;
+const wctx = world.getContext('2d');
+
+/* ============================================================
+   ОТРИСОВКА СТАТИЧЕСКОГО МИРА
+   ============================================================ */
+function drawZebra(c, p) {
+  c.fillStyle = 'rgba(255,255,255,.82)';
+  const o = HW;
+  for (let i = -HW + 6; i <= HW - 6; i += 14) {
+    c.fillRect(p.x + i,      p.y - o - 16, 8, 14);  // север
+    c.fillRect(p.x + i,      p.y + o + 2,  8, 14);  // юг
+    c.fillRect(p.x - o - 16, p.y + i,      14, 8);  // запад
+    c.fillRect(p.x + o + 2,  p.y + i,      14, 8);  // восток
+  }
+}
+
+function drawTrafficLight(c, p) {
+  const corners = [[-1,-1],[1,-1],[-1,1],[1,1]];
+  for (const [sx,sy] of corners) {
+    const x = p.x + sx*(HW + 15);
+    const y = p.y + sy*(HW + 15);
+    c.fillStyle = 'rgba(0,0,0,.35)';
+    c.beginPath(); c.arc(x, y+2, 9, 0, Math.PI*2); c.fill();
+    c.fillStyle = '#242a31';
+    c.beginPath(); c.arc(x, y, 9, 0, Math.PI*2); c.fill();
+    c.fillStyle = '#e0453c';
+    c.beginPath(); c.arc(x - 3.2, y, 3, 0, Math.PI*2); c.fill();
+    c.fillStyle = '#41d16a';
+    c.beginPath(); c.arc(x + 3.2, y, 3, 0, Math.PI*2); c.fill();
+  }
+}
+
+function renderWorld() {
+  const c = wctx;
+
+  // трава
+  c.fillStyle = '#3f6849';
+  c.fillRect(0, 0, W, H);
+  c.fillStyle = 'rgba(255,255,255,.035)';
+  for (let i = 0; i < 420; i++) {
+    c.fillRect(Math.random()*W, Math.random()*H, 3, 3);
+  }
+
+  // тротуары
+  c.fillStyle = '#96a0a6';
+  for (const y of ROAD_Y) c.fillRect(0, y - HW - 7, W, RW + 14);
+  for (const x of ROAD_X) c.fillRect(x - HW - 7, 0, RW + 14, H);
+
+  // асфальт
+  c.fillStyle = '#3b4048';
+  for (const y of ROAD_Y) c.fillRect(0, y - HW, W, RW);
+  for (const x of ROAD_X) c.fillRect(x - HW, 0, RW, H);
+
+  // разметка по краям
+  c.fillStyle = 'rgba(255,255,255,.14)';
+  for (const y of ROAD_Y) { c.fillRect(0, y - HW + 3, W, 2); c.fillRect(0, y + HW - 5, W, 2); }
+  for (const x of ROAD_X) { c.fillRect(x - HW + 3, 0, 2, H); c.fillRect(x + HW - 5, 0, 2, H); }
+
+  // осевые пунктиры
+  c.strokeStyle = '#d9c26a';
+  c.lineWidth = 3;
+  c.setLineDash([16, 18]);
+  for (const y of ROAD_Y) { c.beginPath(); c.moveTo(0, y); c.lineTo(W, y); c.stroke(); }
+  for (const x of ROAD_X) { c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke(); }
+  c.setLineDash([]);
+
+  // чистим перекрёстки от пунктира
+  c.fillStyle = '#3b4048';
+  for (const n of INTERSECTIONS) {
+    const p = NODES[n];
+    c.fillRect(p.x - HW, p.y - HW, RW, RW);
+  }
+
+  // зебры
+  INTERSECTIONS.forEach((n, i) => {
+    if (i < state.levels.zebra) drawZebra(c, NODES[n]);
+  });
+
+  // светофоры
+  INTERSECTIONS.forEach((n, i) => {
+    if (i < state.levels.light) drawTrafficLight(c, NODES[n]);
+  });
+}
+
+/* ============================================================
+   МАШИНЫ
+   ============================================================ */
+function spawnCar(anywhere) {
+  const [from, to] = SPAWNS[(Math.random()*SPAWNS.length)|0];
+  const A = NODES[from], Bn = NODES[to];
+  const d = dirBetween(A, Bn);
+  const start = lanePoint(A, d);
+  const end   = lanePoint(Bn, d);
+
+  let x = start.x, y = start.y;
+  if (anywhere) {
+    const t = rand(0.12, 0.85);
+    x = lerp(start.x, end.x, t);
+    y = lerp(start.y, end.y, t);
+  }
+
+  state.cars.push({
+    x, y,
+    fromNode: from,
+    toNode: to,
+    tx: end.x, ty: end.y,
+    angle: Math.atan2(d.y, d.x),
+    speed: rand(70, 125),
+    color: CAR_COLORS[(Math.random()*CAR_COLORS.length)|0],
+    crashed: false,
+    crashTimer: 0,
+    turn: null,
+    smokeT: 0,
+    dead: false
+  });
+}
+
+function arriveAtNode(c) {
+  const prev = c.fromNode;
+  const cur  = c.toNode;
+  const opts = (ADJ[cur] || []).filter(n => n !== prev);
+
+  if (opts.length === 0) { c.dead = true; return; }
+
+  const d1 = dirBetween(NODES[prev], NODES[cur]);
+  const straight = opts.filter(n => {
+    const d2 = dirBetween(NODES[cur], NODES[n]);
+    return Math.abs(d1.x - d2.x) < 0.01 && Math.abs(d1.y - d2.y) < 0.01;
+  });
+
+  let next;
+  if (straight.length && Math.random() < 0.65) next = straight[0];
+  else next = opts[(Math.random()*opts.length)|0];
+
+  c.fromNode = cur;
+  c.toNode   = next;
+
+  const d2 = dirBetween(NODES[cur], NODES[next]);
+  const startPt = lanePoint(NODES[cur], d2);
+  const endPt   = lanePoint(NODES[next], d2);
+
+  c.tx = endPt.x;
+  c.ty = endPt.y;
+  const newAngle = Math.atan2(d2.y, d2.x);
+
+  const jump = Math.hypot(startPt.x - c.x, startPt.y - c.y);
+  if (jump > 2) {
+    c.turn = {
+      t: 0, dur: 0.18,
+      x0: c.x, y0: c.y, x1: startPt.x, y1: startPt.y,
+      a0: c.angle, a1: newAngle
+    };
+  } else {
+    c.angle = newAngle;
+  }
+}
+
+function hasLight(node) {
+  const i = INTERSECTIONS.indexOf(node);
+  return i >= 0 && i < state.levels.light;
+}
+
+function shouldBrake(c) {
+  if (!hasLight(c.toNode)) return false;
+  const n = NODES[c.toNode];
+  const myDist = Math.hypot(c.x - n.x, c.y - n.y);
+  if (myDist > 95) return false;
+
+  for (const o of state.cars) {
+    if (o === c || o.crashed || o.dead) continue;
+    const od = Math.hypot(o.x - n.x, o.y - n.y);
+    if (od < myDist && od < 62) return true;
+  }
+  return false;
+}
+
+function carAhead(c) {
+  const dx = c.tx - c.x, dy = c.ty - c.y;
+  const l = Math.hypot(dx, dy) || 1;
+  const ux = dx/l, uy = dy/l;
+
+  for (const o of state.cars) {
+    if (o === c || o.dead || o.crashed) continue;
+    const ox = o.x - c.x, oy = o.y - c.y;
+    const forward = ox*ux + oy*uy;
+    if (forward <= 0 || forward > 46) continue;
+    const side = Math.abs(ox*(-uy) + oy*ux);
+    if (side < 14) return true;
+  }
+  return false;
+}
+
+function updateCar(c, dt) {
+  if (c.crashed) {
+    c.crashTimer -= dt;
+    c.smokeT -= dt;
+    if (c.smokeT <= 0) {
+      c.smokeT = 0.18;
+      addParticle(c.x + rand(-8,8), c.y + rand(-8,8),
+                  rand(-6,6), rand(-22,-10), rand(0.6,1.1), 'rgba(120,120,120,0.55)', rand(4,8));
+    }
+    if (c.crashTimer <= 0) c.dead = true;
+    return;
+  }
+
+  if (c.turn) {
+    c.turn.t += dt / c.turn.dur;
+    if (c.turn.t >= 1) {
+      c.x = c.turn.x1; c.y = c.turn.y1; c.angle = c.turn.a1;
+      c.turn = null;
+    } else {
+      const t = ease(c.turn.t);
+      c.x = lerp(c.turn.x0, c.turn.x1, t);
+      c.y = lerp(c.turn.y0, c.turn.y1, t);
+      c.angle = lerpAngle(c.turn.a0, c.turn.a1, t);
+      return;
+    }
+  }
+
+  const dx = c.tx - c.x, dy = c.ty - c.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 0.6) { arriveAtNode(c); return; }
+
+  let speed = c.speed;
+  if (shouldBrake(c))      speed *= 0.06;
+  else if (carAhead(c))    speed *= 0.10;
+
+  const step = speed * dt;
+  if (step >= dist) {
+    c.x = c.tx; c.y = c.ty;
+    arriveAtNode(c);
+  } else {
+    c.x += dx/dist * step;
+    c.y += dy/dist * step;
+  }
+}
+
+function crashCar(c) {
+  if (c.crashed) return;
+  c.crashed = true;
+  c.crashTimer = rand(3.5, 4.5);
+  c.smokeT = 0;
+  c.turn = null;
+  for (let i = 0; i < 14; i++) {
+    const a = Math.random()*Math.PI*2, sp = rand(40,180);
+    addParticle(c.x, c.y, Math.cos(a)*sp, Math.sin(a)*sp,
+                rand(0.35,0.8), i%2 ? '#ffb547' : '#ff5b3a', rand(3,7));
+  }
+}
+
+/* ============================================================
+   ПЕШЕХОДЫ
+   ============================================================ */
+function spawnPed() {
+  state.peds.push({
+    x: rand(30, W-30),
+    y: rand(30, H-30),
+    angle: rand(0, Math.PI*2),
+    speed: rand(22, 46),
+    t: rand(0, 1.5),
+    color: ['#f0d9a0','#d9a0f0','#a0d9f0','#f0a0a0','#a0f0c4'][(Math.random()*5)|0]
+  });
+}
+
+function updatePed(p, dt) {
+  p.t -= dt;
+  if (p.t <= 0) {
+    p.t = rand(0.7, 2.0);
+    p.angle += rand(-1.6, 1.6);
+  }
+  p.x += Math.cos(p.angle) * p.speed * dt;
+  p.y += Math.sin(p.angle) * p.speed * dt;
+
+  if (p.x < 14)     { p.x = 14;     p.angle = Math.PI - p.angle; }
+  if (p.x > W - 14) { p.x = W - 14; p.angle = Math.PI - p.angle; }
+  if (p.y < 14)     { p.y = 14;     p.angle = -p.angle; }
+  if (p.y > H - 14) { p.y = H - 14; p.angle = -p.angle; }
+}
+
+function onRoad(x, y) {
+  for (const ry of ROAD_Y) if (y > ry - HW && y < ry + HW) return true;
+  for (const rx of ROAD_X) if (x > rx - HW && x < rx + HW) return true;
+  return false;
+}
+
+/* ============================================================
+   АВАРИИ
+   ============================================================ */
+function addAccident(x, y, type) {
+  const total = totalLevels();
+  const base = type === 'ped' ? 12 : 9;
+  const coins = Math.max(3, Math.round((base + Math.random()*6) * (1 + total*0.12)));
+
+  state.accidents.push({
+    x, y, coins, type,
+    life: 8, maxLife: 8,
+    seed: Math.random()*100
+  });
+  state.totalCrashes++;
+}
+
+function isInLitIntersection(x, y) {
+  for (let i = 0; i < state.levels.light; i++) {
+    const n = NODES[INTERSECTIONS[i]];
+    if (Math.abs(x - n.x) < HW + 12 && Math.abs(y - n.y) < HW + 12) return true;
+  }
+  return false;
+}
+
+function checkCarCollisions(dt) {
+  for (let i = 0; i < state.cars.length; i++) {
+    const a = state.cars[i];
+    if (a.crashed || a.dead) continue;
+
+    for (let j = i+1; j < state.cars.length; j++) {
+      const b = state.cars[j];
+      if (b.crashed || b.dead) continue;
+
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (d < 20) {
+        const mx = (a.x + b.x)/2, my = (a.y + b.y)/2;
+        let rate = isInLitIntersection(mx, my) ? 0.5 : 3.0;
+        rate *= Math.max(0.3, 1 - state.levels.sign*0.05 - state.levels.bump*0.04);
+
+        const p = 1 - Math.exp(-rate * dt);
+        if (Math.random() < p) {
+          crashCar(a);
+          crashCar(b);
+          addAccident(mx, my, 'car');
+          break;
+        }
+      }
+    }
+  }
+}
+
+function checkPedCollisions(dt) {
+  for (let i = state.peds.length - 1; i >= 0; i--) {
+    const p = state.peds[i];
+    if (!onRoad(p.x, p.y)) continue;
+
+    for (const c of state.cars) {
+      if (c.crashed || c.dead) continue;
+      if (Math.hypot(c.x - p.x, c.y - p.y) < 20) {
+        let rate = 2.0;
+        rate *= Math.max(0.18, 1 - state.levels.zebra*0.16 - state.levels.patrol*0.06);
+
+        const prob = 1 - Math.exp(-rate * dt);
+        if (Math.random() < prob) {
+          crashCar(c);
+          addAccident(p.x, p.y, 'ped');
+          state.peds.splice(i, 1);
+          break;
+        }
+      }
+    }
+  }
+}
+
+/* ============================================================
+   ЧАСТИЦЫ / ВСПЛЫВАЮЩИЙ ТЕКСТ
+   ============================================================ */
+function addParticle(x, y, vx, vy, life, color, size) {
+  state.particles.push({ x, y, vx, vy, life, maxLife: life, color, size });
+}
+function addFloater(x, y, text, color) {
+  state.floaters.push({ x, y, text, color: color || '#ffd75e', life: 1.2, maxLife: 1.2 });
+}
+
+/* ============================================================
+   ОБНОВЛЕНИЕ
+   ============================================================ */
+function update(dt) {
+  // пассивный доход
+  state.coins += incomePerSec() * dt;
+
+  // спавн машин
+  state.carTimer -= dt;
+  const aliveCars = state.cars.filter(c => !c.crashed).length;
+  if (state.carTimer <= 0 && aliveCars < MAX_CARS) {
+    spawnCar(false);
+    state.carTimer = rand(0.7, 1.4);
+  }
+
+  // спавн пешеходов
+  state.pedTimer -= dt;
+  if (state.pedTimer <= 0 && state.peds.length < MAX_PEDS) {
+    spawnPed();
+    state.pedTimer = rand(1.8, 3.2);
+  }
+
+  // машины
+  for (const c of state.cars) updateCar(c, dt);
+  state.cars = state.cars.filter(c => !c.dead);
+
+  // пешеходы
+  for (const p of state.peds) updatePed(p, dt);
+
+  // столкновения
+  checkCarCollisions(dt);
+  checkPedCollisions(dt);
+
+  // аварии — время жизни
+  for (let i = state.accidents.length - 1; i >= 0; i--) {
+    const a = state.accidents[i];
+    a.life -= dt;
+    if (a.life <= 0) state.accidents.splice(i, 1);
+  }
+
+  // частицы
+  for (let i = state.particles.length - 1; i >= 0; i--) {
+    const p = state.particles[i];
+    p.life -= dt;
+    if (p.life <= 0) { state.particles.splice(i, 1); continue; }
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= 0.94;
+    p.vy *= 0.94;
+  }
+
+  // всплывающий текст
+  for (let i = state.floaters.length - 1; i >= 0; i--) {
+    const f = state.floaters[i];
+    f.life -= dt;
+    if (f.life <= 0) { state.floaters.splice(i, 1); continue; }
+    f.y -= 42 * dt;
+  }
+}
+
+/* ============================================================
+   ОТРИСОВКА
+   ============================================================ */
+function roundRect(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x+r, y);
+  c.arcTo(x+w, y,   x+w, y+h, r);
+  c.arcTo(x+w, y+h, x,   y+h, r);
+  c.arcTo(x,   y+h, x,   y,   r);
+  c.arcTo(x,   y,   x+w, y,   r);
+  c.closePath();
+}
+
+function drawCar(c) {
+  ctx.save();
+  ctx.translate(c.x, c.y);
+  ctx.rotate(c.angle);
+
+  // тень
+  ctx.fillStyle = 'rgba(0,0,0,.3)';
+  roundRect(ctx, -14, -7, 30, 16, 5); ctx.fill();
+
+  // кузов
+  ctx.fillStyle = c.crashed ? '#5a5a5a' : c.color;
+  roundRect(ctx, -15, -8, 30, 16, 5); ctx.fill();
+
+  // крыша / лобовое
+  ctx.fillStyle = 'rgba(255,255,255,.32)';
+  roundRect(ctx, -1, -6, 10, 12, 3); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,.18)';
+  roundRect(ctx, -12, -6, 6, 12, 2); ctx.fill();
+
+  // фары
+  ctx.fillStyle = 'rgba(255,245,200,.9)';
+  ctx.fillRect(13, -6, 3, 4);
+  ctx.fillRect(13, 2, 3, 4);
+
+  ctx.restore();
+}
+
+function drawPed(p) {
+  ctx.save();
+  ctx.translate(p.x, p.y);
+
+  ctx.fillStyle = 'rgba(0,0,0,.28)';
+  ctx.beginPath(); ctx.ellipse(0, 8, 6, 3, 0, 0, Math.PI*2); ctx.fill();
+
+  ctx.fillStyle = p.color;
+  roundRect(ctx, -4, -2, 8, 9, 3); ctx.fill();
+
+  ctx.fillStyle = '#f2c9a0';
+  ctx.beginPath(); ctx.arc(0, -6, 4, 0, Math.PI*2); ctx.fill();
+
+  ctx.restore();
+}
+
+function render(t) {
+  ctx.clearRect(0, 0, W, H);
+  ctx.drawImage(world, 0, 0);
+
+  // пешеходы
+  for (const p of state.peds) drawPed(p);
+
+  // машины
+  for (const c of state.cars) drawCar(c);
+
+  // аварии
+  for (const a of state.accidents) {
+    const pulse = 1 + Math.sin(t*6 + a.seed) * 0.09;
+    const fade = a.life < 2 ? a.life / 2 : 1;
+
+    ctx.globalAlpha = fade;
+
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, 32 * pulse, 0, Math.PI*2);
+    ctx.fillStyle = a.type === 'ped' ? 'rgba(255,60,60,.20)' : 'rgba(255,140,60,.20)';
+    ctx.fill();
+    ctx.strokeStyle = a.type === 'ped' ? 'rgba(255,90,90,.85)' : 'rgba(255,170,80,.85)';
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    ctx.font = Math.round(36 * pulse) + 'px serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('💥', a.x, a.y);
+
+    ctx.font = 'bold 14px system-ui, sans-serif';
+    ctx.lineWidth = 3.5;
+    ctx.strokeStyle = 'rgba(0,0,0,.65)';
+    ctx.strokeText('+' + a.coins, a.x, a.y + 32);
+    ctx.fillStyle = '#ffd75e';
+    ctx.fillText('+' + a.coins, a.x, a.y + 32);
+
+    ctx.globalAlpha = 1;
+  }
+
+  // частицы
+  for (const p of state.particles) {
+    const al = Math.max(0, p.life / p.maxLife);
+    ctx.globalAlpha = al;
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * al, 0, Math.PI*2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // всплывающие монетки
+  for (const f of state.floaters) {
+    const al = Math.max(0, f.life / f.maxLife);
+    ctx.globalAlpha = al;
+    ctx.font = 'bold 22px system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(0,0,0,.7)';
+    ctx.strokeText(f.text, f.x, f.y);
+    ctx.fillStyle = f.color;
+    ctx.fillText(f.text, f.x, f.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ============================================================
+   МАГАЗИН
+   ============================================================ */
+const shopList = document.getElementById('shopList');
+const itemEls = {};
+
+function buildShop() {
+  for (const item of SHOP) {
+    const btn = document.createElement('button');
+    btn.className = 'item';
+    btn.type = 'button';
+    btn.innerHTML =
+      '<div class="ico">' + item.icon + '</div>' +
+      '<div class="info">' +
+        '<div class="name">' + item.name + ' <span class="lvl"></span></div>' +
+        '<div class="desc">' + item.desc + '</div>' +
+      '</div>' +
+      '<div class="price"></div>';
+
+    btn.addEventListener('click', () => buy(item.id));
+    shopList.appendChild(btn);
+
+    itemEls[item.id] = {
+      btn,
+      lvl: btn.querySelector('.lvl'),
+      price: btn.querySelector('.price')
+    };
+  }
+  updateShopUI();
+}
+
+function buy(id) {
+  const item = SHOP.find(i => i.id === id);
+  const lvl = state.levels[id];
+  if (lvl >= item.maxLevel) return;
+
+  const price = priceOf(item);
+  if (state.coins < price) return;
+
+  state.coins -= price;
+  state.levels[id]++;
+
+  if (id === 'light' || id === 'zebra') renderWorld();
+  updateShopUI();
+
+  addFloater(W/2, 60, item.icon + ' ' + item.name, '#8ee6a8');
+}
+
+function updateShopUI() {
+  for (const item of SHOP) {
+    const el = itemEls[item.id];
+    const lvl = state.levels[item.id];
+    const maxed = lvl >= item.maxLevel;
+
+    el.lvl.textContent = lvl + '/' + item.maxLevel;
+
+    if (maxed) {
+      el.price.textContent = 'МАКС';
+      el.btn.classList.add('maxed');
+      el.btn.disabled = true;
+    } else {
+      const price = priceOf(item);
+      el.price.textContent = fmt(price) + ' 🪙';
+      el.btn.classList.remove('maxed');
+      el.btn.disabled = state.coins < price;
+    }
+  }
+}
+
+const coinText = document.getElementById('coinText');
+const incomeText = document.getElementById('incomeText');
+
+function updateHud() {
+  coinText.textContent = fmt(state.coins);
+  const inc = incomePerSec();
+  incomeText.textContent = '+' + inc.toFixed(1) + '/сек';
+}
+
+/* ============================================================
+   ВВОД
+   ============================================================ */
+function canvasPos(e) {
+  const r = cv.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * (W / r.width),
+    y: (e.clientY - r.top)  * (H / r.height)
+  };
+}
+
+function accidentAt(x, y) {
+  for (let i = state.accidents.length - 1; i >= 0; i--) {
+    const a = state.accidents[i];
+    if (Math.hypot(a.x - x, a.y - y) < 36) return i;
+  }
+  return -1;
+}
+
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault();
+  const { x, y } = canvasPos(e);
+  const idx = accidentAt(x, y);
+  if (idx < 0) return;
+
+  const a = state.accidents[idx];
+  state.coins += a.coins;
+
+  addFloater(a.x, a.y - 20, '+' + a.coins, '#ffd75e');
+
+  for (let i = 0; i < 12; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const sp = rand(60, 210);
+    addParticle(a.x, a.y, Math.cos(ang)*sp, Math.sin(ang)*sp,
+                rand(0.4, 0.9), i % 3 === 0 ? '#fff3b0' : '#ffd75e', rand(3, 6));
+  }
+
+  state.accidents.splice(idx, 1);
+  updateShopUI();
+});
+
+cv.addEventListener('pointermove', e => {
+  const { x, y } = canvasPos(e);
+  cv.style.cursor = accidentAt(x, y) >= 0 ? 'pointer' : 'default';
+});
+
+/* ============================================================
+   СТАРТ
+   ============================================================ */
+renderWorld();
+buildShop();
+
+// стартовая сцена: машины уже в пути
+for (let i = 0; i < 6; i++) spawnCar(true);
+for (let i = 0; i < 3; i++) spawnPed();
+
+let lastT = performance.now();
+let uiTimer = 0;
+
+function loop(now) {
+  let dt = (now - lastT) / 1000;
+  lastT = now;
+  if (dt > 0.06) dt = 0.06;
+
+  update(dt);
+  render(now / 1000);
+
+  uiTimer -= dt;
+  if (uiTimer <= 0) {
+    uiTimer = 0.12;
+    updateHud();
+    updateShopUI();
+  }
+
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
